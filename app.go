@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,6 +16,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 // Units.
@@ -36,10 +37,18 @@ var (
 )
 
 func init() {
+	loglevel := os.Getenv("LOG_LEVEL")
+
 	flag.StringVar(&cert, "cert", "", "give me a certificate")
 	flag.StringVar(&key, "key", "", "give me a key")
 	flag.StringVar(&port, "port", "80", "give me a port number")
 	flag.StringVar(&name, "name", os.Getenv("WHOAMI_NAME"), "give me a name")
+
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	if strings.ToLower(loglevel)=="debug" {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	}
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 }
 
 var upgrader = websocket.Upgrader{
@@ -57,24 +66,31 @@ func main() {
 	http.HandleFunc("/api", apiHandler)
 	http.HandleFunc("/health", healthHandler)
 
-	fmt.Println("Starting up on port " + port)
+	log.Info().Str("port", port).Msg("Starting up")
 
 	if len(cert) > 0 && len(key) > 0 {
-		log.Fatal(http.ListenAndServeTLS(":"+port, cert, key, nil))
+		if err:=http.ListenAndServeTLS(":"+port, cert, key, nil);err!=nil {
+			log.Fatal().Err(err).Msg("Could not start server")
+		}
 	}
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	if err:=http.ListenAndServe(":"+port, nil);err!=nil {
+		log.Fatal().Err(err).Msg("Could not start server")
+	}
 }
 
-func benchHandler(w http.ResponseWriter, _ *http.Request) {
+func benchHandler(w http.ResponseWriter, r *http.Request) {
+	log.Debug().Str("handler","benchHandler").Str("from",r.RemoteAddr).Msg("Got request")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Content-Type", "text/plain")
+	log.Debug().Str("handler","benchHandler").Str("from",r.RemoteAddr).Msg("Responding")
 	_, _ = fmt.Fprint(w, "1")
 }
 
 func echoHandler(w http.ResponseWriter, r *http.Request) {
+	log.Debug().Str("handler","echoHandler").Str("from",r.RemoteAddr).Msg("Got request")
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Println(err)
+		log.Error().Err(err).Msg("Error in echoHandler")
 		return
 	}
 
@@ -93,14 +109,14 @@ func echoHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func printBinary(s []byte) {
-	fmt.Printf("Received b:")
+	log.Info().Msg("Received b:")
 	for n := 0; n < len(s); n++ {
-		fmt.Printf("%d,", s[n])
+		log.Info().Msgf("%d,", s[n])
 	}
-	fmt.Printf("\n")
 }
 
 func dataHandler(w http.ResponseWriter, r *http.Request) {
+	log.Debug().Str("handler","dataHandler").Str("from",r.RemoteAddr).Msg("Got request")
 	u, _ := url.Parse(r.URL.String())
 	queryParams := u.Query()
 
@@ -143,8 +159,9 @@ func dataHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func whoamiHandler(w http.ResponseWriter, req *http.Request) {
-	u, _ := url.Parse(req.URL.String())
+func whoamiHandler(w http.ResponseWriter, r *http.Request) {
+	log.Debug().Str("handler","whoamiHandler").Str("from", r.RemoteAddr).Msg("Got request")
+	u, _ := url.Parse(r.URL.String())
 	wait := u.Query().Get("wait")
 	if len(wait) > 0 {
 		duration, err := time.ParseDuration(wait)
@@ -176,14 +193,16 @@ func whoamiHandler(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	_, _ = fmt.Fprintln(w, "RemoteAddr:", req.RemoteAddr)
-	if err := req.Write(w); err != nil {
+	log.Debug().Str("handler","whoamiHandler").Str("from", r.RemoteAddr).Msg("Responding")
+	_, _ = fmt.Fprintln(w, "RemoteAddr:", r.RemoteAddr)
+	if err := r.Write(w); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 }
 
-func apiHandler(w http.ResponseWriter, req *http.Request) {
+func apiHandler(w http.ResponseWriter, r *http.Request) {
+	log.Debug().Str("handler","whoamiHandler").Str("from", r.RemoteAddr).Msg("Got request")
 	hostname, _ := os.Hostname()
 
 	data := struct {
@@ -197,10 +216,10 @@ func apiHandler(w http.ResponseWriter, req *http.Request) {
 	}{
 		Hostname: hostname,
 		IP:       []string{},
-		Headers:  req.Header,
-		URL:      req.URL.RequestURI(),
-		Host:     req.Host,
-		Method:   req.Method,
+		Headers:  r.Header,
+		URL:      r.URL.RequestURI(),
+		Host:     r.Host,
+		Method:   r.Method,
 		Name:     name,
 	}
 
@@ -223,6 +242,7 @@ func apiHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	log.Debug().Str("handler","whoamiHandler").Str("from", r.RemoteAddr).Msg("Responding")
 	if err := json.NewEncoder(w).Encode(data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -238,16 +258,18 @@ var (
 	mutexHealthState   = &sync.RWMutex{}
 )
 
-func healthHandler(w http.ResponseWriter, req *http.Request) {
-	if req.Method == http.MethodPost {
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	log.Debug().Str("handler","healthHandler").Str("from", r.RemoteAddr).Msg("Got request")
+
+	if r.Method == http.MethodPost {
 		var statusCode int
 
-		if err := json.NewDecoder(req.Body).Decode(&statusCode); err != nil {
+		if err := json.NewDecoder(r.Body).Decode(&statusCode); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		fmt.Printf("Update health check status code [%d]\n", statusCode)
+		log.Info().Int("statusCode",statusCode).Msg("Update health check status code.")
 
 		mutexHealthState.Lock()
 		defer mutexHealthState.Unlock()
@@ -255,6 +277,7 @@ func healthHandler(w http.ResponseWriter, req *http.Request) {
 	} else {
 		mutexHealthState.RLock()
 		defer mutexHealthState.RUnlock()
+		log.Debug().Str("handler","healthHandler").Str("from", r.RemoteAddr).Msg("Responding")
 		w.WriteHeader(currentHealthState.StatusCode)
 	}
 }
