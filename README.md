@@ -25,6 +25,10 @@ Tiny Go webserver that prints os information and HTTP request to output
 - `port`: give me a port number. (default: 80)
 - `name`: give me a name. (it can be also defined with `WHOAMI_NAME` environment variable)
 
+### Environment Variable
+
+- `LOG_LEVEL`: assign "debug" for more verbose output
+
 ## Examples
 
 ```console
